@@ -16,6 +16,18 @@ MIN_COUNT = 3
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
+hidden_size = 500
+encoder_n_layers = 2
+decoder_n_layers = 2
+dropout = 0.1
+batch_size = 64
+loadFilename = None
+checkpoint_iter = 4000
+
+model_name = 'cb_model'
+attn_model = 'dot'
+attn_model = 'general'
+#attn_model = 'concat'
 
 
 corpus_name = "cornell_movie_dialogs_corpus"
@@ -28,7 +40,7 @@ MOVIE_LINES_FIELDS = ["lineID", "characterID", "movieID", "character", "text"]
 MOVIE_CONVERSATIONS_FIELDS = ["character1ID", "character2ID", "movieID", "utteranceIDs"]
 
 class ResponseGen:
-        
+    
     def __init__(self, train=False):
         if(train):
             self.filename = os.path.join(corpus, "movie_lines.txt")
@@ -55,19 +67,8 @@ class ResponseGen:
 
     
     def train(self):
-        model_name = 'cb_model'
-        attn_model = 'dot'
-        #attn_model = 'general'
-        #attn_model = 'concat'
-        save_dir = './'
-        hidden_size = 500
-        encoder_n_layers = 2
-        decoder_n_layers = 2
-        dropout = 0.1
-        batch_size = 64
-        loadFilename = None
-        checkpoint_iter = 4000
-    
+        save_dir = './checkpoint'
+       
         if loadFilename:
             checkpoint = torch.load(loadFilename)
             encoder_sd = checkpoint['en']
@@ -96,7 +97,7 @@ class ResponseGen:
         decoder_learning_ratio = 5.0
         n_iteration = 4000
         print_every = 200
-        save_every = 500
+        save_every = 1000
         self.encoder.train()
         self.decoder.train()
 
@@ -193,14 +194,34 @@ class ResponseGen:
        
 
     def run(self, inputSeq):
+        embedding = nn.Embedding(self.voc.num_words, hidden_size)
+        encoder = Encoder(hidden_size, embedding, encoder_n_layers, dropout)
+        decoder = LattnDecoder(attn_model, embedding, hidden_size, self.voc.num_words, decoder_n_layers, dropout)
+        
         indexes_batch = [indexesFromSentence(self.voc, inputSeq)]
         lengths = torch.tensor([len(indexes) for indexes in indexes_batch])
         input_batch = torch.LongTensor(indexes_batch).transpose(0,1)
 
+        checkpoint = torch.load("./checkpoint/cb_model/cornell_movie_dialogs_corpus/2-2_500/4000_checkpoint.tar")
+        encoder_sd = checkpoint['en']
+        decoder_sd = checkpoint['de']            
+        embedding_sd = checkpoint['embedding']
+        #self.voc.__dict__ = checkpoint['self.voc_dict']
+
+        encoder.load_state_dict(encoder_sd)
+        decoder.load_state_dict(decoder_sd)
+        embedding.load_state_dict(embedding_sd)
+
+        encoder.to(device)
+        decoder.to(device)
+
+        encoder.eval()
+        decoder.eval()
+
         lengths = lengths.to(device)
         input_batch = input_batch.to(device)
-
-        token, scores = greedySearchDecoder(self.encoder, self.decoder)(input_batch, lengths, MAX_LENGTH)
+        
+        token, scores = greedySearchDecoder(encoder, decoder)(input_batch, lengths, MAX_LENGTH)
         decode_words = [self.voc.index2word[token.item()] for token in token]
         return decode_words
 
@@ -218,7 +239,7 @@ def maskNLLLoss(inp, target, mask):
 
 if(__name__ == "__main__"):
     bot = ResponseGen(True)
-    bot.train()
+    #bot.train()
 
     while(1):
         try:
@@ -226,6 +247,5 @@ if(__name__ == "__main__"):
             output_seq = bot.run(input_seq.lower())
             output_seq[:] = [x for x in output_seq if not (x=='EOS' or x=='PAD')]
             print('Bot:', ' '.join(output_seq))
-
         except:
             print("Came up with a word not known")
